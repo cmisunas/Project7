@@ -1,0 +1,470 @@
+---
+title: "Project 7: Difference-in-Differences and Synthetic Control"
+author: "Christina Misunas, Chris Soria, Juana Montoya Murillo"
+output:
+  html_document:
+    df_print: paged
+---
+library(knitr)
+library(ggplot2)
+install.packages("cowplot")
+library(cowplot)
+
+#Libraries
+```{r}
+source("C:/Users/cmisu/Project_7/R/augsynth.R")
+source("C:/Users/cmisu/Project_7/R/augsynth_pre.R")
+source("C:/Users/cmisu/Project_7/R/cv.R")
+source("C:/Users/cmisu/Project_7/R/data.R")
+source("C:/Users/cmisu/Project_7/R/eligible_donors.R")
+source("C:/Users/cmisu/Project_7/R/fit_synth.R")
+source("C:/Users/cmisu/Project_7/R/format.R")
+source("C:/Users/cmisu/Project_7/R/globalVariables.R")
+source("C:/Users/cmisu/Project_7/R/highdim.R")
+source("C:/Users/cmisu/Project_7/R/inference.R")
+source("C:/Users/cmisu/Project_7/R/multi_outcomes.R")
+source("C:/Users/cmisu/Project_7/R/multi_synth_qp.R")
+source("C:/Users/cmisu/Project_7/R/multisynth_class.R")
+source("C:/Users/cmisu/Project_7/R/outcome_models.R")
+source("C:/Users/cmisu/Project_7/R/outcome_multi.R")
+source("C:/Users/cmisu/Project_7/R/ridge.R")
+source("C:/Users/cmisu/Project_7/R/ridge_lambda.R")
+source("C:/Users/cmisu/Project_7/R/time_regression_multi.R")
+source("C:/Users/cmisu/Project_7/R/collect.optimx.R")
+source("C:/Users/cmisu/Project_7/R/dataprep.R")
+source("C:/Users/cmisu/Project_7/R/fn.V.R")
+source("C:/Users/cmisu/Project_7/R/gaps.plot.R")
+source("C:/Users/cmisu/Project_7/R/path.plot.R")
+source("C:/Users/cmisu/Project_7/R/spec.pred.func.R")
+source("C:/Users/cmisu/Project_7/R/synth.R")
+source("C:/Users/cmisu/Project_7/R/synth.tab.R")
+source("C:/Users/cmisu/Project_7/R/zzz.R")
+```
+
+```{r}
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(# Tidyverse packages including dplyr and ggplot2
+               tidyverse,
+               ggthemes,
+               augsynth,
+               gsynth,
+               readr,
+               LowRankQP, 
+               BiocManager,
+               LowRankQP, 
+               Synth,
+               devtools)
+#install.packages("cli", Version='3.4.0')
+#devtools::install_github("ebenmichael/augsynth")
+```
+
+#Data
+```{r}
+# set seed
+set.seed(44)
+# load data
+df<- read_csv("medicaid_expansion.csv")
+medicaid_expansion<- read_csv("medicaid_expansion.csv")
+```
+
+# PART 3: Exploratory Data Analysis
+Create plots and provide 1-2 sentence analyses to answer the following questions:
+- Which states had the highest uninsured rates prior to 2014? The lowest?
+- Which states were home to most uninsured Americans prior to 2014? How about in the last year in the data set? **Note**: 2010 state population is provided as a variable to answer this question. In an actual study you would likely use population estimates over time, but to simplify you can assume these numbers stay about the same.
+A: The states with the highest average uninsured rates before 2014 include Nevada, Florida, New Mexico, and Texas, which are primarily Republican-majority states. On the other hand, the states with the largest average population sizes during the same period are California, Texas, Florida, and New York, representing a mix of both Republican and Democratic states. In 2020, the states with the highest uninsured rates were Texas, Oklahoma, and Georgia, while the states with the lowest uninsured rates were Massachusetts, Rhode Island, and Hawaii.
+```{r}
+# Group data by State and calculate the sum of the average uninsured rate for each State
+medicaid_expansion$uninsured_pop <- as.integer(medicaid_expansion$uninsured_rate * medicaid_expansion$population)
+
+sum_avg_uninsured_rate <- medicaid_expansion %>%
+  filter(year < 2014) %>%
+  group_by(State) %>%
+  summarize(sum_avg_uninsured_rate = sum(uninsured_rate) / length(uninsured_rate)) %>% 
+  arrange(desc(sum_avg_uninsured_rate)) %>% 
+  filter(State != "District of Columbia")
+
+top_avg_uninsured_rate <- slice(sum_avg_uninsured_rate,1:10)
+
+low_avg_uninsured_rate <- sum_avg_uninsured_rate %>%
+  arrange(sum_avg_uninsured_rate) %>%
+  slice(1:10)
+
+sum_avg_uninsured_pop <- medicaid_expansion %>%
+  filter(year < 2014) %>%
+  group_by(State) %>%
+  summarize(sum_avg_uninsured_pop = sum(uninsured_pop) / length(uninsured_pop)) %>% 
+  arrange(desc(sum_avg_uninsured_pop)) %>% 
+  filter(State != "District of Columbia")
+
+top_avg_uninsured_pop <- slice(sum_avg_uninsured_pop,1:10)
+
+low_avg_uninsured_pop <- sum_avg_uninsured_pop %>%
+  arrange(sum_avg_uninsured_pop) %>%
+  slice(1:10)
+```
+Most uninsured Americans rate
+```{r}
+# Create a horizontal bar plot sorted by sum_avg_uninsured_rate
+uninsured_rate_plot <- 
+  ggplot(top_avg_uninsured_rate, aes(x = sum_avg_uninsured_rate, y = reorder(State, sum_avg_uninsured_rate), fill = State)) +
+  geom_bar(stat = "identity") +
+  labs(title = "States with Highest Average Uninsured Rate", x = "Average Uninsured Rate, 2008-14", y = "State") +
+  theme_cowplot() +
+  theme(legend.position = "none")
+
+# Display the plot
+print(uninsured_rate_plot)
+print(top_avg_uninsured_rate)
+```
+Least uninsured Americans rate
+```{r}
+uninsured_rate_plot_low <- 
+  ggplot(low_avg_uninsured_rate, aes(x = sum_avg_uninsured_rate, y = reorder(State, -sum_avg_uninsured_rate), fill = State)) +
+  geom_bar(stat = "identity") +
+  labs(title = "States with Lowest Average Uninsured Rate", x = "Average Uninsured Rate, 2008-14", y = "State") +
+  theme_cowplot() +
+  theme(legend.position = "none")
+
+# Display the plot
+print(uninsured_rate_plot_low)
+print(low_avg_uninsured_rate)
+```
+Most uninsured by population size
+```{r}
+uninsured_pop_plot_top <- 
+  ggplot(top_avg_uninsured_pop, aes(x = sum_avg_uninsured_pop, y = reorder(State, sum_avg_uninsured_pop), fill = State)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Top 10 States with Highest Average Uninsured Pop", x = "Average Uninsured Pop, 2008-14", y = "State") +
+  theme_cowplot() +
+  theme(legend.position = "none")
+
+uninsured_pop_plot_top
+top_avg_uninsured_pop
+```
+Least uninsured 
+```{r}
+uninsured_pop_plot_low <- 
+  ggplot(low_avg_uninsured_pop, aes(x = sum_avg_uninsured_pop, y = reorder(State, -sum_avg_uninsured_pop), fill = State)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Bottom 10 States with Lowest Average Uninsured Pop", x = "Average Uninsured Pop, 2008-14", y = "State") +
+  theme_cowplot() +
+  theme(legend.position = "none")
+
+uninsured_pop_plot_low
+low_avg_uninsured_pop
+```
+
+Last year of the data (2020)
+```{r}
+medicaid_expansion %>%
+  filter(year == 2020) %>%
+  group_by(State) %>%
+  summarize(avg_uninsured_rate = mean(uninsured_rate)) %>%
+  arrange(desc(avg_uninsured_rate)) %>%
+  filter(State != "District of Columbia") %>%
+  slice(1:10)
+
+medicaid_expansion %>%
+  filter(year == 2020) %>%
+  group_by(State) %>%
+  summarize(avg_uninsured_rate = mean(uninsured_rate)) %>%
+  arrange(desc(avg_uninsured_rate)) %>%
+  filter(State != "District of Columbia") %>%
+  slice(41:50)
+
+medicaid_expansion %>%
+  filter(year == 2020) %>%
+  group_by(State) %>%
+  summarize(avg_uninsured_rate = mean(uninsured_rate*population)) %>%
+  arrange(desc(avg_uninsured_rate)) %>%
+  filter(State != "District of Columbia") %>%
+  slice(1:10)
+
+medicaid_expansion %>%
+  filter(year == 2020) %>%
+  group_by(State) %>%
+  summarize(avg_uninsured_rate = mean(uninsured_rate*population)) %>%
+  arrange(desc(avg_uninsured_rate)) %>%
+  filter(State != "District of Columbia") %>%
+  slice(41:50)
+```
+
+# PART 4: Difference-in-Differences Estimation
+## Estimate Model
+Do the following:
+- Choose a state that adopted the Medicaid expansion on January 1, 2014 and a state that did not. **Hint**: Do not pick Massachusetts as it passed a universal healthcare law in 2006, and also avoid picking a state that adopted the Medicaid expansion between 2014 and 2015.
+
+###States that adopted the Medicaid expansion on January 1, 2014
+```{r}
+df %>% filter(Date_Adopted=='2014-01-01') %>% group_by(Date_Adopted,State) %>% summarise(n=n())
+###CoLORADO
+```
+###States that didn't adopt the Medicaid expansion on January 1, 2014 or between 2014 and 2015
+```{r}
+df %>% filter(Date_Adopted != '2014-01-01',Date_Adopted != '2014-04-01',Date_Adopted != '2014-08-15',Date_Adopted != '2015-01-01',Date_Adopted != '2015-02-01',Date_Adopted != '2015-09-01') %>% group_by(Date_Adopted, State) %>% summarise(n=n())
+###LOUISIANA
+```
+
+- Assess the parallel trends assumption for your choices using a plot. If you are not satisfied that the assumption has been met, pick another state and try again (but detail the states you tried).
+### Parallel Trends plot between Colorado and Louisiana
+```{r}
+df %>%
+  filter(State %in% c("Colorado","Louisiana")) %>%
+  ggplot() + 
+  geom_point(aes(x = year, 
+                 y = uninsured_rate, 
+                 color = State)) +
+  geom_line(aes(x = year, 
+                y = uninsured_rate, 
+                color = State)) +
+  geom_vline(aes(xintercept = 2014)) +
+  theme_fivethirtyeight() +
+  theme(axis.title = element_text()) +
+  ggtitle('Colorado and Louisiana uninsured rate \n before/after adopted the Medicaid expansion') +
+  xlab('Year') +
+  ylab('Uninsured Rate')
+```
+### Difference-in-Differences estimation - Regression
+```{r}
+# Colorado - Louisiana
+CL <- df %>% filter(State %in% c("Colorado","Louisiana")) %>% filter(year<=2016)
+CL$timel<- ifelse(CL$year>=2014,"After","Before")
+CL$time<- ifelse(CL$year>=2014,1,0)
+CL$treated<- ifelse(CL$State == "Colorado" ,1,0) #& CL$year>=2014
+CL$treatedl<- ifelse(CL$State == "Colorado" ,'treated','non_treated')
+CL$did<- CL$time*CL$treated
+didreg = lm(uninsured_rate ~ treated + time + did, data=CL )
+summary(didreg)
+```
+### Estimate the differences in one pre-treatment and one post-treatment period
+```{r}
+# pre-treatment difference
+pre_diff <- CL %>%
+  filter(year == 2013) %>%
+  select(State, 
+         uninsured_rate) %>%
+  spread(State, 
+         uninsured_rate) %>%
+  summarise(Colorado - Louisiana)
+  
+# post-treatment difference
+post_diff <- CL %>%
+  filter(year == 2015) %>%
+  select(State, 
+         uninsured_rate) %>%
+  spread(State, 
+         uninsured_rate) %>%
+  summarise(Colorado - Louisiana)
+
+# diff-in-diffs
+diff_in_diffs <- pre_diff - post_diff 
+diff_in_diffs
+```
+### Average of the pre-treatment and post-treatment outcomes
+```{r}
+df_summary <- CL %>%
+  group_by(State,timel) %>%
+  summarize(mean_outcome = mean(uninsured_rate)) %>%
+  pivot_wider(names_from = timel, values_from = mean_outcome)# %>%
+df_summary$Diff <- df_summary$After - df_summary$Before
+df_summary 
+```
+```{r}
+DID = (df_summary$After[1]-df_summary$After[2]) - (df_summary$Before[1]-df_summary$Before[2])
+DID
+```
+## Discussion Questions
+- Card/Krueger's original piece utilized the fact that towns on either side of the Delaware river are likely to be quite similar to one another in terms of demographics, economics, etc. Why is that intuition harder to replicate with this data?
+- **Answer**: The intuition behind the Card/Krueger paper is harder to replicate with the Medicaid dataset because the Medicaid dataset is focused on state-level data and does not provide information on neighboring areas with similar demographics and economics that could serve as natural experiments to test the impact of Medicaid expansion on the uninsured rate. Therefore, it is more difficult to draw causal inferences about the impact of Medicaid expansion on the uninsured rate using this dataset compared to the Card/Krueger paper's methodology.
+
+- What are the strengths and weaknesses of using the parallel trends assumption in difference-in-differences estimates?
+- **Answer**:
+**Strengths**:
+If the parallel trends assumption holds, DID estimates can provide a causal estimate of the effect of the policy change being studied.
+DID estimates are robust to unobserved time-invariant confounders that affect both the treatment and control groups in the same way.
+DID estimates can be used to estimate the effect of a policy change on outcomes that are difficult to measure, such as health or quality of life.
+**Weaknesses**:
+If the parallel trends assumption is violated, DID estimates may be biased and not provide a reliable estimate of the causal effect of the policy change.
+The parallel trends assumption may be difficult to verify, especially if the pre-treatment trends are not very clear or if other factors could be influencing the trends. DID estimates may be sensitive to unobserved time-varying confounders that affect the treatment and control groups differently over time.
+
+# PART 5: Staggered Adoption Synthetic Control
+- Although several states did not expand Medicaid on January 1, 2014, many did later on. In some cases, a Democratic governor was elected and pushed for a state budget that included the Medicaid expansion, whereas in others voters approved expansion via a ballot initiative. The 2018 election was a watershed moment where several Republican-leaning states elected Democratic governors and approved Medicaid expansion. In cases with a ballot initiative, the state legislature and governor still must implement the results via legislation. For instance, Idaho voters approved a Medicaid expansion in the 2018 election, but it was not implemented in the state budget until late 2019, with enrollment beginning in 2020.
+
+- Do the following: Choose a state that adopted the Medicaid expansion after January 1, 2014. Construct a non-augmented synthetic control and plot the results (both pre-treatment fit and post-treatment differences). Also report the average ATT and L2 imbalance.
+WE CHOSE LOUISIANA!
+```{r}
+df_2<- df %>%
+mutate(treatment = ifelse(State == "Louisiana" & year >= 2016,
+1,
+0))
+df_2$treated<- ifelse(df_2$State == "Louisiana" ,1,0) #& CL$year>=2016
+head(df_2)
+```
+
+```{r}
+unique(df_2$uninsured_rate)
+unique(df_2$treated)
+dim(df_2)
+names(df_2)
+```
+
+### Non-augmented synthetic control
+- Average ATT: -0.024  (p Value for Joint Null: 0.186)
+- L2 imbalance: 0.003
+```{r}
+df$treatedL<- ifelse(df$State == "Louisiana" & df$year>=2016,1,0)
+syn <- augsynth(uninsured_rate~treatedL, State, year, data = df,
+                progfunc = "None", scm = T)
+summary(syn)
+```
+```{r}
+plot(syn)
+```
+### Re-running the same analysis but this time using an augmentation (Ridge).
+- Average ATT: -0.024  (p Value for Joint Null: 0.174)
+- L2 imbalance: 0.003
+```{r}
+ridge_syn <- augsynth(uninsured_rate~treatedL, State, year, data = df,
+                progfunc = "ridge", scm = T)
+summary(ridge_syn)
+plot(ridge_syn)
+```
+
+### Plot barplots to visualize the weights of the donors.
+```{r}
+data.frame(ridge_syn$weights) %>%
+  tibble::rownames_to_column('State') %>%
+  ggplot() +
+  geom_bar(aes(x = State, y = ridge_syn.weights),
+           stat = 'identity') +
+  theme_fivethirtyeight() +
+  theme(axis.title = element_text(),
+        axis.text.x = element_text(angle = 90)) +
+  ggtitle('Synthetic Control Weights') +
+  xlab('State') +
+  ylab('Weight')
+```
+### Discussion Questions
+What are the advantages and disadvantages of synthetic control compared to difference-in-differences estimators?
+**Answer**: 
+Difference-in-difference models (DiD) are useful when there is a strong match for units in the treatment and control group.  DID assumes a parallel assumption holds - meaning that we assume that both treatment and control would have followed a similar trend in the absence of treatment. However, that does not appear to have been the case. For example, some states (i.e. Massachusetts) likely already had policies in effect similar to the ACA; conversely, other states only recently began implementation and therefore might see more dramatic declines in the rate of uninsured. In the event of policy changes occurring at different times (i.e. the ACA being implemented at different times in different states), synthetic control can be an especially useful approach because it does not require an exact match between units (states). 
+
+DiD also requires a larger sample size with a sufficient number of treatment and controls whereas synthetic control can be used even in situations with limited sample size. In our case, synthetic control is a more useful approach when the majority of states implement the same policy in a certain year (2014) and only a few states implement it later (i..e. Louisiana in 2016)
+
+One of the benefits of synthetic control is that the weights are bounded between [0,1] and the weights must sum to 1. Augmentation might relax this assumption by allowing for negative weights. Does this create an interpretation problem, and how should we balance this consideration against the improvements augmentation offers in terms of imbalance in the pre-treatment period?
+**Answer**:  Using negative weights can make interpretation difficult because the output can imply that not being treated (the control) can have a negative effect on the outcome (in our case, rates of health insurance). Using negative weights can also make it difficult to assess the validity and robustness of results. We can try to balance the difficulty in interpretation with the improvements augmentation offers by carefully assessing results and performing sensitivity analyses. 
+
+# PART 6
+- Estimate Multisynth
+```{r}
+head(df)
+```
+### Create variable year when the state adopted the Medicaid expansion
+```{r}
+df$date<- as.Date(df$Date_Adopted,'%Y/%m/%d')
+df$year_Medicaid<- as.numeric(format(df$date, "%Y"))
+```
+
+```{r}
+df_clean <- df %>%
+    mutate(year_Medicaid = ifelse(is.na(year_Medicaid), 
+                                   Inf, year_Medicaid),
+           cbr = 1 * (year >= year_Medicaid))
+```
+
+```{r}
+names(df_clean)
+```
+### multisynth model states
+- Estimate a multisynth model that treats each state individually. Choose a fraction of states that you can fit on a plot and examine their treatment effects.
+####Estimation
+```{r}
+# Subset the data to select a fraction of states
+subset <- sample(unique(df_clean$State), 25)
+state.panel_sub <- df_clean[df_clean$State %in% subset,]
+ms<-multisynth(uninsured_rate ~ cbr, State, year, state.panel_sub, n_leads =  10,method = "within")
+ms_syn_summ<- summary(ms)
+summary(ms)
+```
+
+#### Plots
+```{r}
+# Plot the treatment effects for the selected states
+install.packages("ggrepel")
+library(ggrepel)
+plot(ms)
+```
+```{r}
+ms_syn_summ$att
+```
+
+```{r}
+ms_syn_summ$att %>%
+  ggplot(aes(x = Time, y = Estimate, color = Level)) +
+  geom_point() +
+  geom_line() +
+  geom_vline(xintercept = 0) +
+  theme_fivethirtyeight() +
+  theme(axis.title = element_text(),
+        legend.position = "bottom") +
+  ggtitle('Synthetic Controls for State') +
+  xlab('Time') +
+  ylab('Estimation')
+```
+
+```{r}
+ms_syn_summ$att %>%
+  ggplot(aes(x = Time, y = Estimate, color = Level)) +
+  geom_point() +
+  geom_line() +
+  geom_vline(xintercept = 0) +
+  theme_fivethirtyeight() +
+  theme(axis.title = element_text(),
+        legend.position = 'None') +
+  ggtitle('Synthetic Controls for State') +
+  xlab('Time') +
+  ylab('Estimation') +
+  facet_wrap(~Level)
+```
+
+### multisynth model time cohorts
+- Estimate a multisynth model using time cohorts. For the purpose of this exercise, you can simplify the treatment time so that states that adopted Medicaid expansion within the same year (i.e. all states that adopted expansion in 2016) count for the same cohort. Plot the treatment effects for these time cohorts.
+```{r}
+ms_syn_cohorts <- multisynth(uninsured_rate ~ cbr, State, year, state.panel_sub, n_leads =  10,method = "within", time_cohort = TRUE)
+ms_syn_cohorts_summ <- summary(ms_syn_cohorts)
+ms_syn_cohorts_summ
+```
+#### Plots
+```{r}
+plot(ms_syn_cohorts_summ)
+```
+```{r}
+ms_syn_cohorts_summ$att %>%
+  ggplot(aes(x = Time, y = Estimate, color = Level)) +
+  geom_point() +
+  geom_line() +
+  geom_vline(xintercept = 0) +
+  theme_fivethirtyeight() +
+  theme(axis.title = element_text(),
+        legend.position = 'None') +
+  ggtitle('Synthetic Controls for State') +
+  xlab('Time') +
+  ylab('Estimation') +
+  facet_wrap(~Level)
+```
+
+## Discussion Questions
+One feature of Medicaid is that it is jointly administered by the federal government and the states, and states have some flexibility in how they implement Medicaid. For example, during the Trump administration, several states applied for waivers where they could add work requirements to the eligibility standards (i.e. an individual needed to work for 80 hours/month to qualify for Medicaid). Given these differences, do you see evidence for the idea that different states had different treatment effect sizes?
+- **Answer**: Overall, yes, it appears as though the effect size varies based on state.
+Do you see evidence for the idea that early adopters of Medicaid expansion enjoyed a larger decrease in the uninsured population?
+- **Answer**: In states like California that adopted Medicaid in year 2014, we see a larger decrease in the uninsured population. However, even in states that adopted Medicaid expansion later (as in after 2014), we still see a sizable decrease in the rate of uninsured. 
+
+## PART 7: General Discussion Questions
+- Question 1: Difference-in-Differences (DiD) and synthetic control estimates are well suited to studies of aggregated units like cities, states and counties because they allow researchers to estimate causal impact of policies (like the ACA) which are often implemented at larger levels. This is especially the case in areas of research where it is not possible (for practical or ethical reasons) to conduct randomized controlled trials. Focusing on cities/localities as a group (as opposed to focusing on individuals as the unit of analysis) can also lead to smaller sample size. However, since they draw on data from both treated and non-treated units to determine effect size, DiD and synthetic control approaches are also useful in situations where sample size might be more limited.
+
+- Question 2: All of these methods are used for causal inference and are employed when random treatment selection can't be achieved. However, Regression Discontinuity (RD) operates under a different set of assumptions and is suited for different types of research designs compared to Difference-in-Differences (DiD) and Synthetic Control. DiD and Synthetic Control primarily focus on examining trends, while Regression Discontinuity looks for a "jump" in outcomes at the point where treatment assignment changes. RD is centered around assigning control and treatment groups based on a threshold value. When constructing the threshold and assigning treatment status, we assume that units just above and below the threshold are similar in all aspects except with respect to the treatment. On the other hand, DiD and Synthetic Control do not assign or rely on treatment based on a threshold value. Instead, these methods concentrate on comparing outcome trends between treatment and control groups under the assumption that, in the absence of treatment, these trends would have been parallel. The key distinction between RD and the other two methods is the different assumptions and research design requirements for each approach, with RD focusing on the discontinuity at the threshold and DiD and Synthetic Control examining trends in outcomes over time.
+
+
+
+
+
